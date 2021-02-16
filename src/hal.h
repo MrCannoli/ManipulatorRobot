@@ -4,21 +4,34 @@
 #include <stdint.h>
 
 enum motor_num {
-    MOTOR1 = 1,
-    MOTOR2 = 2,
-    MOTOR3 = 3,
-    MOTOR4 = 4,
-    MOTOR5 = 5,
-    MOTOR6 = 6,
-    MOTOR7 = 7,
-    MOTOR8 = 8,
-    MOTOR_ENUM_END = 9,
+    MOTOR1 = 0,
+    MOTOR2 = 1,
+    MOTOR3 = 2,
+    MOTOR4 = 3,
+    MOTOR5 = 4,
+    MOTOR6 = 5,
+    MOTOR7 = 6,
+    MOTOR8 = 7,
+    MOTOR_ENUM_END = 8,
 };
 
 enum {
     DISABLE = 0,
     ENABLE = 1,
 };
+
+/// \struct Data structure for holding different counters. Used for debugging and statistics.
+struct counters{
+    uint32_t ik_success_count;
+    uint32_t ik_timeout_count;
+    uint32_t ik_iteration_overrun_count;
+    uint32_t ik_too_large_angle_count;
+    uint32_t ik_negative_angle_count;
+    uint32_t ik_nan_position;
+};
+
+/// \var Struct containing the counters incremented during normal operation
+extern struct counters counters;
 
 extern float motor_duty_cycle[8];
 
@@ -39,6 +52,9 @@ void hal_control_general_led3(bool enable);
 
 // Delay Functions
 void hal_delay_ms(uint32_t delay);
+
+// Return the current systick counter value
+uint32_t hal_get_systick_counter(void);
 
 // Compiler barrier
 void hal_compiler_barrier(void);

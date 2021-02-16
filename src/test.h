@@ -8,3 +8,4 @@ void test_move_servo(enum motor_num motor);
 void test_move_all_servos(void);
 void test_led_toggle(void);
 void test_move_to_points(void);
+void test_ik(void);

@@ -1,11 +1,26 @@
 #include "test.h"
 #include "hal.h"
-#include "usb.h"
 #include "position_control.h"
-#include <stdint.h>
+#include "usb.h"
 #include <stddef.h>
+#include <stdint.h>
 
 // This file contains test functions for the code
+
+// Test points for IK and movement
+const struct Point tp1 = {10, 10, 10};
+const struct Point tp2 = {100, 20, 30}; // Unreachable
+const struct Point tp3 = {90, 0, 0}; // 1 solution possible
+const struct Point tp4 = {40, 20, 80}; // Unreachable
+const struct Point tp5 = {-1, 37, 12};
+const struct Point tp6 = {1000, 70, 70}; // No solutions
+const struct Point tp7 = {-10, 40, 40}; // Close to 120 deg limit, reachable
+const struct Point tp8 = {-40, -10, 40}; // Beyond the range of the joints; difficult for IK to determine
+
+const struct Point test_points[] = {tp1, tp2, tp3, tp4, tp5, tp6, tp7, tp8};
+
+uint32_t test_success[10];
+uint32_t test_fail[10];
 
 // Debug variables
 volatile uint32_t temp1, temp2, temp3, temp4, temp5, temp6, temp7, temp8, temp9;
@@ -87,24 +102,18 @@ void test_led_toggle() {
     hal_delay_ms(1000);
 }
 
-void test_move_to_points(){
-    const struct Point p1 = { 50, 50, 50 };
-    const struct Point p2 = { 100, 20, 30 };
-    const struct Point p3 = { 120, 0, 0 };
-    const struct Point p4 = { 40, 70, 70 };
-    const struct Point p5 = { 60, 60, 60 };
-    const struct Point p6 = { 70, 70, 70 };
-
-    const struct Point points[] = {p1, p2, p3, p4, p5, p6};
-
-    for(size_t i = 0; i < (sizeof(points)/sizeof(points[0])); i++){
+void test_move_to_points() {
+    for (size_t i = 0; i < (sizeof(test_points) / sizeof(test_points[0])); i++) {
         // Set the next target position and move towards it
-        if(position_control_set_target_position(points[i])){
+        if (position_control_set_target_position(test_points[i])) {
             // Wait until movement to the point completes
-            while(position_control_check_angles());
+            while (!position_control_check_angles())
+                ;
+            hal_control_i2c_led(1);
+            hal_delay_ms(300);
+            hal_control_i2c_led(0);
             hal_delay_ms(1000);
-        }
-        else{
+        } else {
             // Do a short LED blink to signal that the position failed
             hal_control_spi_led(1);
             hal_delay_ms(300);
@@ -112,5 +121,16 @@ void test_move_to_points(){
             hal_delay_ms(1000);
         }
     }
+}
 
+void test_ik(){
+    float test_angles[NUM_JOINTS];
+    for (size_t i = 0; i < (sizeof(test_points) / sizeof(test_points[0])); i++) {
+        if(position_control_fabrik(test_points[i],test_angles)){
+            test_success[i]++;
+        }
+        else{
+            test_fail[i]++;
+        }
+    }
 }

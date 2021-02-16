@@ -5,10 +5,13 @@ DEVICE           = stm32f401rct6
 OPENCM3_DIR      = libopencm3
 OBJS            += $(patsubst %.c,%.o,$(wildcard src/*.c))
 
+export TARGETS = stm32/f4
+
 # Compiler Flags
 CFLAGS          += -std=c11
-CFLAGS          += -O0 -ggdb3 -flto
+CFLAGS          += -O0 -ggdb3
 CFLAGS          += -Wall -Wextra -Wshadow -Wconversion -Werror
+CFLAGS          += -fdata-sections -ffunction-sections #-flto Note: link time optimizations breaks weak function overrides here
 CFLAGS          += -Isrc/
 CPPFLAGS        += -MD -DSTM32F4
 
@@ -28,6 +31,7 @@ include $(OPENCM3_DIR)/mk/gcc-rules.mk
 # Clean commands
 clean:
 	$(Q)$(RM) -rf main.* $(OBJS) generated*.ld $(wildcard src/*.d)
+	$(Q)$(MAKE) clean -C $(OPENCM3_DIR)
 
 # Formatting Commands
 format:
@@ -39,9 +43,14 @@ all: lib main.elf main.bin
 lib:
 	$(Q)$(MAKE) -C $(OPENCM3_DIR)
 
+main.elf: $(OBJS) $(LDSCRIPT) $(LIBDEPS)
+	@printf "  LD      $(*).elf\n"
+	$(Q)$(LD) $(OBJS) $(LDLIBS) $(LDFLAGS) -T$(LDSCRIPT) $(ARCH_FLAGS)  -o main.elf
+
 # Black Magic Probe (BMP) load & debug commands
-load: lib main.elf
-	arm-none-eabi-gdb main.elf -x bmp.gdb -ex load
+load: main.elf
+	gdb-multiarch main.elf -x bmp.gdb -ex load
 
 gdb: lib main.elf
-	arm-none-eabi-gdb -x bmp.gdb
+	gdb-multiarch -x bmp.gdb
+

@@ -13,6 +13,7 @@
 
 #include "hal.h"
 #include "position_control.h"
+#include "test.h"
 
 // Want value on the prescaler such that
 // Tfreq = 50Hz -> Tperiod = 1/50 = 20ms
@@ -28,6 +29,8 @@
 #define TIMER_PRESCALER (uint32_t)(13 * 2 - 1)
 // Set the period length to be at 50Hz
 #define TIMER_PERIOD_LENGTH (uint32_t)(64615)
+
+struct counters counters;
 
 // Counter which increments once every millisecond
 static uint32_t systick_counter;
@@ -53,14 +56,15 @@ void hal_init(void) {
 
     // Enable Systick
     systick_set_clocksource(STK_CSR_CLKSOURCE_AHB);
+    STK_CVR = 0;
     systick_set_reload(rcc_ahb_frequency / 1000); // Tick every 1ms
     systick_interrupt_enable();
     systick_counter_enable();
 
     // Future feature: Enable USB first and wait on communication from a host
-    // computer This will allow us to make sure a robot is set back to the
-    // starting position without jumping during initialization It also will
-    // provide the host computer with full control of robot operation
+    // computer. This will allow us to make sure a robot is set back to the
+    // starting position without jumping during initialization. It also will
+    // provide the host computer full control of robot operation
 
     // Motor control enable pin
     // PH0
@@ -86,6 +90,7 @@ void hal_init(void) {
     gpio_set_output_options(GPIOB, GPIO_OTYPE_PP, GPIO_OSPEED_100MHZ, GPIO6 | GPIO7 | GPIO8 | GPIO9);
     gpio_set_af(GPIOB, GPIO_AF2, GPIO6 | GPIO7 | GPIO8 | GPIO9);
 
+
     timer_set_mode(TIM3, TIM_CR1_CKD_CK_INT, TIM_CR1_CMS_EDGE, TIM_CR1_DIR_UP);
     timer_set_prescaler(TIM3, TIMER_PRESCALER);
     timer_set_repetition_counter(TIM3, 0);
@@ -96,8 +101,8 @@ void hal_init(void) {
     timer_set_repetition_counter(TIM4, 0);
     timer_set_period(TIM4, TIMER_PERIOD_LENGTH); // 50Hz Period
 
-    /* -- Output Capture Config (Duty cycle for PWM) -- */
-    /* Disable outputs. */
+    // Output Capture Config (Duty cycle for PWM)
+    // Disable outputs
     timer_disable_oc_output(TIM3, TIM_OC1);
     timer_disable_oc_output(TIM3, TIM_OC2);
     timer_disable_oc_output(TIM3, TIM_OC3);
@@ -107,7 +112,7 @@ void hal_init(void) {
     timer_disable_oc_output(TIM4, TIM_OC3);
     timer_disable_oc_output(TIM4, TIM_OC4);
 
-    /* Configure global mode of the output capture lines. */
+    // Configure global mode of the output capture lines.
     timer_disable_oc_clear(TIM3, TIM_OC1);
     timer_enable_oc_preload(TIM3, TIM_OC1);
     timer_set_oc_slow_mode(TIM3, TIM_OC1);
@@ -162,7 +167,7 @@ void hal_init(void) {
     timer_set_oc_value(TIM4, TIM_OC3, 0);
     timer_set_oc_value(TIM4, TIM_OC4, 0);
 
-    /* Reenable outputs. */
+    // Reenable outputs
     timer_enable_oc_output(TIM3, TIM_OC1);
     timer_enable_oc_output(TIM3, TIM_OC2);
     timer_enable_oc_output(TIM3, TIM_OC3);
@@ -172,11 +177,11 @@ void hal_init(void) {
     timer_enable_oc_output(TIM4, TIM_OC3);
     timer_enable_oc_output(TIM4, TIM_OC4);
 
-    /* ARR reload enable. */
+    // ARR reload enable
     timer_enable_preload(TIM3);
     timer_enable_preload(TIM4);
 
-    /* Counter enable. */
+    // Counter enable
     timer_enable_counter(TIM3);
     timer_enable_counter(TIM4);
 
@@ -185,6 +190,7 @@ void hal_init(void) {
     timer_set_prescaler(TIM9, 2 - 1); // Prescale by 2 to remove clock doubling
     timer_set_repetition_counter(TIM9, 0);
     timer_set_period(TIM9, rcc_apb2_frequency / STEPS_PER_SECOND); // Time step every millisecond
+    timer_enable_irq(TIM9, TIM_DIER_UIE);
 
     // If more interrupts are added, need to check and confirm priority setting
     // works correctly
@@ -200,7 +206,7 @@ void hal_init(void) {
     gpio_set_af(GPIOA, GPIO_AF10, GPIO10 | GPIO11 | GPIO12);
     // TODO: More USB peripheral and interrupt setup
 
-    /* Currently unused but may be used peripherals:
+    // Currently unused but may be used peripherals:
     // SPI2 Setup (TBD)
     // NSS = PB12, SCLK = PB13, MISO = PB14, MOSI = PB15
 
@@ -209,7 +215,6 @@ void hal_init(void) {
 
     // ADC1 Setup (TBD)
     // ADC1 IN0-3 = PA0-3
-    */
     return;
 }
 
@@ -227,6 +232,7 @@ void hal_set_motor_duty_cycle(enum motor_num motor, float duty_cycle) {
     // Control of the motor is limited to 1-2ms of the 20ms pulse
     const uint32_t timer_offset = (uint32_t)(TIMER_PERIOD_LENGTH / 20);
     // Divide by 15 here because it gives better control in testing
+    // TODO: Check on this div by 15
     uint32_t timer_duty_cycle_val = timer_offset + (uint32_t)((float)TIMER_PERIOD_LENGTH * duty_cycle / 100.0 / 15.0);
 
     switch (motor) {
@@ -316,9 +322,7 @@ void hal_control_general_led1(bool enable) {
     }
 }
 
-void hal_toggle_general_led1(){
-    gpio_toggle(GPIOC, GPIO13);
-}
+void hal_toggle_general_led1() { gpio_toggle(GPIOC, GPIO13); }
 
 void hal_control_general_led2(bool enable) {
     if (enable) {
@@ -338,7 +342,7 @@ void hal_control_general_led3(bool enable) {
 }
 
 // Return the current systick counter value
-static uint32_t hal_get_systick_counter(void) {
+uint32_t hal_get_systick_counter(void) {
     hal_compiler_barrier();
     return systick_counter;
 }
@@ -362,17 +366,19 @@ void hal_movement_timer_enable() { nvic_enable_irq(NVIC_TIM1_BRK_TIM9_IRQ); }
 // Disable the movement interrupt
 void hal_movement_timer_disable() { nvic_disable_irq(NVIC_TIM1_BRK_TIM9_IRQ); }
 
-// Runs every 1ms
-void sys_tick_handler(void) {
+// System core timer. Runs at 1KHz.
+void sys_tick_handler(void){
     hal_compiler_barrier();
     systick_counter++;
+    hal_compiler_barrier();
 }
 
 // Periodic timer used to move the robot joints in steps
 // Ticks at 1KHz when active
-void tim9_handler(void) {
+void tim1_brk_tim9_isr(void) {
     hal_compiler_barrier();
     static size_t step_count = 0;
+    timer_clear_flag(TIM9, TIM_SR_UIF);
 
     if (position_control_check_angles()) {
         // We are at our target destination, turn off movement
@@ -380,19 +386,18 @@ void tim9_handler(void) {
         hal_control_general_led1(0);
     }
 
-    if(step_count == STEPS_PER_SECOND/5){
-        // Toggle LED1 at 5Hz while moving
+    if (step_count == STEPS_PER_SECOND / 2) {
+        // Toggle LED1 at 2Hz while moving
         hal_toggle_general_led1();
         // Reset the step count
         step_count = 0;
     }
     // Attempt to perform a movement step
-    if(position_control_step_towards_position()){
+    if (position_control_step_towards_position()) {
         // Stepped successfully
         step_count++;
         hal_control_general_led2(0);
-    }
-    else{
+    } else {
         // Failed to step towards the target
         hal_control_general_led2(1);
     }
@@ -401,7 +406,10 @@ void tim9_handler(void) {
 // Software logic fault
 void __attribute__((noreturn)) logic_fault() {
     hal_compiler_barrier();
-    hal_motor_disable(); // Disable motors so we don't have any funky behavior
+    // Disable motors so we don't have any funky behavior
+    hal_movement_timer_disable();
+    hal_motor_disable();
+
     // Future feature: store and transmit the current joint angles of the robot
     // arm over USB to the host computer This can be used to return the robot to
     // the initial position without jumping

@@ -1,6 +1,7 @@
 #include <math.h>
 #include <stdlib.h>
 #include <string.h> // For memcmp()
+#include <stdint.h>
 
 #include "hal.h"
 #include "position_control.h"
@@ -10,24 +11,65 @@
 enum robot_type robot_type = ROBOT_TYPE_V1;
 
 /// \def Distance constants for the different joints. All values are in
-/// centimeters
-#define d1 30.0f // Distance from Joint 2 to Joint 3
-#define d2 30.0f // Distance from Joint 3 to Joint 4
-#define d3 30.0f // Distance from Joint 4 to Joint 5 / initial endpoint
+/// centimeters. D12 is 0 because we consider Joint 1 and Joint 2 to exist
+/// at the same point (the origin) to simplify the math.
+#define d12 0.0f  // Distance from Joint 1 to Joint 2
+#define d23 30.0f // Distance from Joint 2 to Joint 3
+#define d34 30.0f // Distance from Joint 3 to Joint 4
+#define d45 30.0f // Distance from Joint 4 to Joint 5 / initial endpoint
 
+// Array containing the distances between the joints and end effector
+float joint_distances[NUM_JOINTS] = {d12, d23, d34, d45};
+
+/// \def Shorthand macro for squaring a number
+#define SQUARE(X) X*X
+
+/// \def pi to as many places as I care about
 #define PI 3.14159265f
 
+#define MAX_J_ANGLE (float)(PI * 2.0f / 3.0f)
+
+/// \def Timeout for the IK calculation in milliseconds
+#define IK_TIMEOUT 1000
+/// \def Maximum iterations allowed for the IK calculation
+#define IK_MAX_ITERATIONS 10000
+
+// Maximum position error tolerance in centimeters
+#define POSITION_ERROR_TOLERANCE 0.1f
+
 // Maximum length of the arm
-const float MAX_ARM_LENGTH = sqrtf(powf(d1, 2) + powf(d2, 2) + powf(d3, 2));
+const float MAX_ARM_LENGTH = d12 + d23 + d34 + d45;
+
+// Starting points for the joints
+const struct Point origin = {0, 0, 0};
+const struct Point j1_start = origin;
+const struct Point j2_start = {d12, 0, 0};
+const struct Point j3_start = {d12 + d23, 0, 0};
+const struct Point j4_start = {d12 + d23 + d34, 0, 0};
+const struct Point end_start = {d12 + d23 + d34 + d45, 0, 0};
+
+// Positions of the joints. Joint[0] is always at the origin.
+struct Point joint_positions[NUM_JOINTS_AND_END] = {
+    j1_start, j2_start, j3_start, j4_start, end_start
+};
+
+// Enum for indexing arrays involving the joints
+enum joint_indexes{
+    J1 = 0,
+    J2 = 1,
+    J3 = 2,
+    J4 = 3,
+    JEND = 4,
+};
 
 // Struct containing the current joint angles
-struct JointAngles current_angles;
+float current_angles[NUM_JOINTS];
 // Struct containing the target joint angles
-struct JointAngles target_angles;
+float target_angles [NUM_JOINTS];
 
-// Struct containing the current position
+// Struct containing the current end effector position
 struct Point current_position;
-// Struct containing the target position
+// Struct containing the target end effector position
 struct Point target_position;
 
 // Frame of reference: {0,0,0} is the center point of Joint 2, directly above
@@ -35,98 +77,224 @@ struct Point target_position;
 // completely horizontal
 
 /*!
- * \brief Generates a set of joint angles for the robot arm to reach the
- * designated point. Assumes "elbow up" wherever possible.
+ * \brief Get the geometric distance between two points
  *
- * \param p The {x,y,z} point we want IK for
- * \param angles Pointer to the struct we want to store the angles in. This will
- * not be modified if the function fails.
+ * \param p1 Point 1
+ * \param p2 Point 2
  *
- * \returns 1 if succeeded, 0 if the point is not possible to access
+ * \returns Distance between the two points
  */
-int position_control_inverse_kinematics(struct Point p, struct JointAngles *angles) {
-    // Check if the point is within our workspace
-    if (sqrt(powf(p.x, 2) + powf(p.y, 2) + powf(p.z, 2)) > MAX_ARM_LENGTH) {
-        // Point is outside of our workspace
-        return 0;
-    } else if (p.z < 0) {
-        // Limit the arm from going below the horizontal plane
-        return 0;
-    }
+float position_control_point_distance(struct Point p1, struct Point p2) {
+    return (float)sqrtf(SQUARE((p1.x - p2.x)) + SQUARE((p1.y - p2.y)) + SQUARE((p1.z - p2.z)));
+}
 
-    THIS FAILS. Need to rewrite the IK so that it can reach arbitrary points, not just those that meet the trapezoidal requirements
-    Likely will need a numerical solution, not an analytical one?;
+/*!
+ * \brief Get the geometric distance between two points
+ *
+ * \param p1 Point 1, the vertex
+ * \param p2 Point 2, an endpoint
+ * \param p3 Point 3, an endpoint
+ *
+ * \returns The angle (in radians) between the three points
+ */
+float position_control_angle_between_points(struct Point p1, struct Point p2, struct Point p3) {
+    // Create vectors from p1->p2 and p1->p3
+    // These are vectors even though they use the Point struct type. Reusing so I don't have to make an
+    // identical struct.
+    struct Point v12 = {p1.x - p2.x, p1.y - p2.y, p1.z - p2.z};
+    struct Point v13 = {p1.x - p3.x, p1.y - p3.y, p1.z - p3.z};
 
-    struct JointAngles ik_angles;
-    ik_angles.theta1 = atan2f(p.y, p.x); // This will be the same no matter what
+    float dot_product = v12.x * v13.x + v12.y * v13.y + v12.z * v13.z;
+    float v12_mag = sqrtf(SQUARE(v12.x) + SQUARE(v12.y) + SQUARE(v12.z));
+    float v13_mag = sqrtf(SQUARE(v13.x) + SQUARE(v13.y) + SQUARE(v13.z));
 
-    // Calculate intermediate distances & angles so we can generate the joint
-    // angles. These calculations are based on the assumption our joints form an
-    // imaginary trapezoid
-    float r1 = sqrtf(powf(p.x, 2) + powf(p.y, 2)); // XY plane distance from origin
-    float r2 = p.z;                                // Z axis increase from the joint angles
-    float r3 = sqrtf(powf(r1, 2) + powf(r2, 2));   // Distance from Joint 2 to Joint 5 / target
-    float phi1 = atan2f(r2, r1);                   // Angle of the triangle formed by Joint 2, Joint
-                                                   // 5, and the point below Joint 5
-    float phi2 = acosf((powf(d1, 2) + powf((r3 - d2), 2) - powf(d3, 2)) /
-                       (2 * d1 * (r3 - d2)));                        // Angle between Joint 5, Joint 2, and Joint 3
-    float phi3 = (PI / 2.0f) - phi2;                                 // Angle between Joint 2, Joint 3, and Joint 4
-    float r4 = powf(d1, 2) + powf(d2, 2) - 2 * d1 * d2 * cosf(phi3); // Distance between Joint 2 and Joint 4
-    float phi4 =
-        acosf((powf(r3, 2) + powf(d3, 2) - powf(r4, 2)) / (2 * r3 * d3)); // Angle between Joint 2, Joint 5, and Joint 4
+    return acosf(dot_product / (v12_mag * v13_mag));
+}
 
-    // Generate the Joint angles from our calculated values
-    ik_angles.theta1 = atan2f(p.y, p.x);
-    ik_angles.theta2 = phi1 - phi2;
-    ik_angles.theta3 = phi2;
-    ik_angles.theta4 = phi4;
+/*!
+ * \brief Perform Forwards And Backwards Reaching Inverse Kinematics (FABRIK) to
+ * achieve the joint angles necessary for the manipulator to reach a specified point.
+ *
+ * \param target The target point we wish to reach
+ * \param angles_out Array that the generated angles will be placed. If the target is unreachable or
+ * a failure occurs, the array will not be modified.
+ *
+ * \note Generates the new joint positions?
+ * \note di = distance between joint i and i+1
+ *
+ * \returns 1 if successful, 0 if failed
+ */
+struct Point target_joint_positions[NUM_JOINTS_AND_END]; // +1 for end effector
+float ik_angles[NUM_JOINTS];
 
-    if (ik_angles.theta1 > PI / 3.0f || ik_angles.theta2 > PI / 3.0f || ik_angles.theta3 > PI / 3.0f ||
-        ik_angles.theta4 > PI / 3.0f) {
-        // The motors are limited to 120deg of motion. Going beyond that means that
-        // we cannot reach the point.
-        return 0;
-    } else if (sinf(ik_angles.theta2) < 0) {
-        // Joint 3 will be shifted below the z plane
-        return 0;
-    } else if ((d1 * sinf(ik_angles.theta2) + d2 * sinf(ik_angles.theta2 + ik_angles.theta3)) < 0) {
-        // Joint 4 will be below the z plane
-        return 0;
-    } else if ((d1 * sinf(ik_angles.theta2) + d2 * sinf(ik_angles.theta2 + ik_angles.theta3) +
-                d3 * sinf(ik_angles.theta2 + ik_angles.theta3 + ik_angles.theta4)) < 0) {
-        // Joint 5 will be below the z plane
-        // Not a necessary step when Joint 5 is the endpoint, but this will be
-        // necessary for the full wrist
+int position_control_fabrik(struct Point target, float angles_out[]) {
+    // Check whether the target is within reachable distance of the root
+    float distance = position_control_point_distance(target, j1_start);
+    if (distance > MAX_ARM_LENGTH || target.z < 0) {
+        // The target is unreachable
         return 0;
     }
 
-    *angles = ik_angles;
-    return 1;
+    // Create a temporary array to calculate the joint positions
+    //struct Point target_joint_positions[NUM_JOINTS_AND_END]; // +1 for end effector
+    for (size_t i = J1; i <= JEND; i++) {
+        target_joint_positions[i] = joint_positions[i];
+    }
+
+
+    // Loop through the IK Heuristic until we find a way to reach the point or time out
+    uint32_t iteration_count = 0;
+    uint32_t ik_timeout = hal_get_systick_counter() + IK_TIMEOUT;
+    while(1){
+        iteration_count++;
+        // Set b = p1, initial position of joint 1
+        struct Point b = target_joint_positions[J1];
+
+        // Check whether the distance between the end effector pn and target is greater than a tolerance
+        float position_error = position_control_point_distance(target, target_joint_positions[JEND]);
+
+        while (position_error > POSITION_ERROR_TOLERANCE) {
+            if (hal_get_systick_counter() > ik_timeout) {
+                // We timed out
+                counters.ik_timeout_count++;
+                return 0;
+            }
+            else if(iteration_count > IK_MAX_ITERATIONS){
+                // We hit the iteration limit
+                counters.ik_iteration_overrun_count++;
+                return 0;
+            }
+
+            // Stage 1, Forward Reaching
+            // Set the end effector position as target
+            target_joint_positions[JEND] = target;
+            for (int i = JEND-1; i >= J1; i--) {
+                // Find the distance r between the new joint position Pi+1 and the joint pi
+                float r = position_control_point_distance(target_joint_positions[i], target_joint_positions[i + 1]);
+                float lambda = joint_distances[i] / r;
+
+                // Find the new joint position i
+                target_joint_positions[i].x =
+                    (1.0f - lambda) * target_joint_positions[i + 1].x + lambda * target_joint_positions[i].x;
+                target_joint_positions[i].y =
+                    (1.0f - lambda) * target_joint_positions[i + 1].y + lambda * target_joint_positions[i].y;
+                target_joint_positions[i].z =
+                    (1.0f - lambda) * target_joint_positions[i + 1].z + lambda * target_joint_positions[i].z;
+            }
+
+            // Stage 2, Backwards reaching!
+            // Set the root p1 as the initial position (p1 = b)
+            target_joint_positions[0] = b;
+            for (int i = J1; i < JEND; i++) {
+                // Find the distance ri between the new joint position pi and the joint pi+1
+                float r = position_control_point_distance(target_joint_positions[i], target_joint_positions[i + 1]);
+                float lambda = joint_distances[i] / r;
+
+                // Find the new joint position i + 1
+                target_joint_positions[i + 1].x =
+                    (1.0f - lambda) * target_joint_positions[i].x + lambda * target_joint_positions[i + 1].x;
+                target_joint_positions[i + 1].y =
+                    (1.0f - lambda) * target_joint_positions[i].y + lambda * target_joint_positions[i + 1].y;
+                target_joint_positions[i + 1].z =
+                    (1.0f - lambda) * target_joint_positions[i].z + lambda * target_joint_positions[i + 1].z;
+            }
+
+            // Calculate the position error from the target
+            position_error = position_control_point_distance(target, target_joint_positions[JEND]);
+        }
+
+        for(size_t i = 0; i<sizeof(target_joint_positions)/sizeof(target_joint_positions[0]); i++){
+            if(isnan(target_joint_positions[i].x) || isnan(target_joint_positions[i].y) || isnan(target_joint_positions[i].z)){
+                counters.ik_nan_position++;
+                return 0;
+            }
+        }
+
+        // If we reached this point, we found a set of joint positions that can reach the target
+        // Extrapolate the joint angles from the positions
+        //float ik_angles[NUM_JOINTS];
+
+        // Joint 1 (Rotary base) and Joint 2 (First Hinge) are always at the origin.
+        // Angle of J1 can be calculated simply using an atan calculation of the target point
+        ik_angles[J1] = atan2f(target.y, target.x); // This will be the same no matter what
+
+        // Angle of J2 can be extrapolated from right triangle math using the points of J2, J3, and J3 with 0 on the z
+        // axis
+        struct Point j3_no_z = target_joint_positions[J3];
+        j3_no_z.z = 0;
+        ik_angles[J2] = position_control_angle_between_points(target_joint_positions[J2],
+                                                                 target_joint_positions[J3], j3_no_z);
+
+        // Angle of J3 onwards can be extrapolated from the point of the previous joint, the current joint, and the next
+        ik_angles[J3] = PI - position_control_angle_between_points(target_joint_positions[J3],
+                                                                      target_joint_positions[J4],
+                                                                      target_joint_positions[J2]);
+        ik_angles[J4] = PI - position_control_angle_between_points(target_joint_positions[J4],
+                                                                      target_joint_positions[J3],
+                                                                      target_joint_positions[JEND]);
+
+        // This variable will toggle high if any of our angles are bad.
+        bool bad_angle = 0;
+
+        // Check if any of the angles are beyond the driving range
+        for(size_t i = 0; i < NUM_JOINTS-1; i++){
+            if(ik_angles[i] < 0){
+                // We have a negative angle, which isn't allowed for any joint
+                // Set the offending joint angle to 0 and recalculate the joint positions
+                ik_angles[i] = 0;
+
+                // Flag that we had a bad angle
+                bad_angle = 1;
+
+                counters.ik_negative_angle_count++;
+            }
+            else if(ik_angles[i] > MAX_J_ANGLE){
+                // We have a motor angle that goes beyond the driveable range
+                // Set the offending joint angle to half its current angle and recalculate the joint positions
+                ik_angles[i] = ik_angles[i] / 2.0f;
+
+                // Flag that we had a bad angle
+                bad_angle = 1;
+
+                counters.ik_too_large_angle_count++;
+            }
+        }
+
+        if(bad_angle){
+            // Recalculate the potential arm joint positions from the fake angles and attempt to iterate again
+            position_control_joint_forward_kinematics(ik_angles, target_joint_positions);
+        }
+        else{
+            // We completed the IK!
+            // Copy out the joint angles
+            for(size_t i = 0; i < NUM_JOINTS; i++){
+                angles_out[i] = ik_angles[i];
+            }
+            counters.ik_success_count++;
+
+            // Return 1 for success
+            return 1;
+        }
+    }
 }
 
 float position_control_get_angle_from_duty_cycle(enum motor_num motor) {
     // Need to confirm accuracy of this!!
-    return ((PI / 3.0f) * motor_duty_cycle[motor - 1] / 100.0f);
+    return ((MAX_J_ANGLE) * motor_duty_cycle[motor - 1] / 100.0f);
 }
 
 void position_control_set_motor_angle(enum motor_num motor, float angle) {
-    if (angle > PI / 3.0f) {
+    if (angle > MAX_J_ANGLE) {
         // Cannot set it above 120 degrees
         logic_fault();
     }
 
-    switch(motor){
+    switch (motor) {
         case MOTOR1:
-            current_angles.theta1 = angle;
-            break;
         case MOTOR2:
-            current_angles.theta2 = angle;
-            break;
         case MOTOR3:
-            current_angles.theta3 = angle;
-            break;
         case MOTOR4:
-            current_angles.theta4 = angle;
+            current_angles[motor] = angle;
             break;
         case MOTOR5:
         case MOTOR6:
@@ -138,7 +306,7 @@ void position_control_set_motor_angle(enum motor_num motor, float angle) {
             break;
     }
 
-    float duty_cycle = (angle / (PI / 3.0f)) * 100;
+    float duty_cycle = (angle / MAX_J_ANGLE) * 100;
     hal_set_motor_duty_cycle(motor, duty_cycle);
 }
 
@@ -148,33 +316,79 @@ void position_control_set_motor_angle(enum motor_num motor, float angle) {
  * \param angles The joint configuration angles
  * \param position Point of the end effector location
  */
-void position_control_forward_kinematics(struct JointAngles angles, struct Point *position) {
+void position_control_forward_kinematics(float angles[], struct Point *position) {
     switch (robot_type) {
         case ROBOT_TYPE_V1: {
             // Shorthand angle sums
-            float angles23 = angles.theta2 + angles.theta3;
-            float angles234 = angles.theta2 + angles.theta3 + angles.theta4;
+            float angles23 = angles[J2] + angles[J3];
+            float angles234 = angles[J2] + angles[J3] + angles[J4];
 
             // Magnitude of distance in the xy plane
-            float xy_plane_distance = d1 * cosf(angles.theta2) + d2 * cosf(angles23) + d3 * cosf(angles234);
+            float xy_plane_distance = d23 * cosf(angles[J2]) + d34 * cosf(angles23) + d45 * cosf(angles234);
 
             // Calculate the position
-            position->x = cosf(angles.theta1) * xy_plane_distance;
-            position->y = sinf(angles.theta1) * xy_plane_distance;
-            position->z = d1 * sinf(angles.theta2) + d2 * sinf(angles23) + d3 * sinf(angles234);
+            position->x = cosf(angles[J1]) * xy_plane_distance;
+            position->y = sinf(angles[J1]) * xy_plane_distance;
+            position->z = d23 * sinf(angles[J2]) + d34 * sinf(angles23) + d45 * sinf(angles234);
             break;
         }
         case ROBOT_TYPE_V2:
             // This robot type includes the wrist! Update the forward kinematics when we
             // get here.
 
-            // First rotation is the base (motor 1)
-            // Second rotation is motor 2 at offset ROBOT_ARM_A_OFFSET
-            // Third rotation is motor 3 at offset ROBOT_ARM_A_LEN -
-            // ROBOT_ARM_A_B_TRANSITION_OFFSET from the second rotation Fourth rotation
-            // is motor 4 at offset ROBOT_ARM_B_LEN - ROBOT_ARM_B_C_TRANSITION_OFFSET
-            // from the third rotation Fifth (wrist) rotation is motor 5 at offset
-            // ROBOT_ARM_C_LEN - ROBOT_ARM_C_WRIST_TRANSITION from the fourth rotation
+            // This can likely just be two separate calculations:
+            // First is up to the point of the wrist found in type V1
+            // Second is from the start of the wrist to the end effector
+
+            break;
+        default:
+            logic_fault();
+            break;
+    }
+}
+
+/*!
+ * \brief Calculate the current end effector position via forward kinematics
+ *
+ * \param angles The joint configuration angles
+ * \param fw_joint_positions The calculated positions of every joint and the end effector
+ */
+void position_control_joint_forward_kinematics(float angles[], struct Point fw_joint_positions[]){
+    switch (robot_type) {
+        case ROBOT_TYPE_V1: {
+            // Shorthand angle sums
+            float angles23 = angles[J2] + angles[J3];
+            float angles234 = angles[J2] + angles[J3] + angles[J4];
+
+            // Magnitude of distance in the xy plane for each joint
+            float xy_plane_distance_j3 = d23 * cosf(angles[J2]);
+            float xy_plane_distance_j4 = d23 * cosf(angles[J2]) + d34 * cosf(angles23);
+            float xy_plane_distance_jend = d23 * cosf(angles[J2]) + d34 * cosf(angles23) + d45 * cosf(angles234);
+
+            // Calculate the positions
+            fw_joint_positions[J1] = origin; // J1 and J2 are defined as the origin
+            fw_joint_positions[J2] = origin;
+
+            fw_joint_positions[J3].x = cosf(angles[J1]) * xy_plane_distance_j3;
+            fw_joint_positions[J3].y = sinf(angles[J1]) * xy_plane_distance_j3;
+            fw_joint_positions[J3].z = d23 * sinf(angles[J2]);
+
+            fw_joint_positions[J4].x = cosf(angles[J1]) * xy_plane_distance_j4;
+            fw_joint_positions[J4].y = sinf(angles[J1]) * xy_plane_distance_j4;
+            fw_joint_positions[J4].z = d23 * sinf(angles[J2]) + d34 * sinf(angles23);
+
+            fw_joint_positions[JEND].x = cosf(angles[J1]) * xy_plane_distance_jend;
+            fw_joint_positions[JEND].y = sinf(angles[J1]) * xy_plane_distance_jend;
+            fw_joint_positions[JEND].z = d23 * sinf(angles[J2]) + d34 * sinf(angles23) + d45 * sinf(angles234);
+            break;
+        }
+        case ROBOT_TYPE_V2:
+            // This robot type includes the wrist! Update the forward kinematics when we
+            // get here.
+
+            // This can likely just be two separate calculations:
+            // First is up to the point of the wrist found in type V1
+            // Second is from the start of the wrist to the end effector
 
             break;
         default:
@@ -188,15 +402,14 @@ void position_control_forward_kinematics(struct JointAngles angles, struct Point
  *
  * \param target The target point we want to move towards
  *
- * \returns 1 if movement started, 0 if cannot reach the target point
+ * \returns 1 if successful and movement towards target started, 0 if cannot reach the target point
  */
 int position_control_set_target_position(struct Point target) {
     // Calculate the ik angles of the target position
-    if (!position_control_inverse_kinematics(target, &target_angles)) {
+    if (!position_control_fabrik(target, target_angles)) {
         // Cannot reach the target position
         return 0;
-    }
-    else{
+    } else {
         // We can get to the target. Set the target point and begin the movement timer.
         target_position = target;
         hal_movement_timer_enable();
@@ -209,7 +422,16 @@ int position_control_set_target_position(struct Point target) {
  *
  * \return 1 if the same, 0 if different
  */
-int position_control_check_angles() { return !memcmp(&current_angles, &target_angles, sizeof(current_angles)); }
+int position_control_check_angles() {
+    hal_compiler_barrier();
+    for(size_t i = 0; i < sizeof(current_angles)/sizeof(current_angles[0]); i++){
+        if(current_angles[i] != target_angles[i]){
+            return 0;
+        }
+    }
+    return 1;
+    //return !memcmp(current_angles, target_angles, sizeof(current_angles));
+}
 
 /*!
  * \brief Step all motors towards the specified position at a maximum speed. Does not move if
@@ -222,53 +444,21 @@ int position_control_check_angles() { return !memcmp(&current_angles, &target_an
 int position_control_step_towards_position() {
     // Determine if we need the joint to move in the positive or negative
     // directions
-    float theta1_diff = target_angles.theta1 - current_angles.theta1;
-    float theta2_diff = target_angles.theta2 - current_angles.theta2;
-    float theta3_diff = target_angles.theta3 - current_angles.theta3;
-    float theta4_diff = target_angles.theta4 - current_angles.theta4;
 
-    if (theta1_diff == 0) {
-        // We are at the target angle, skip ahead
-    } else if (fabsf(theta1_diff) < MAX_ANGULAR_STEP) {
-        // Move to the final position
-        position_control_set_motor_angle(MOTOR1, target_angles.theta1);
-    } else if (theta1_diff > 0) {
-        position_control_set_motor_angle(MOTOR1, current_angles.theta1 - MAX_ANGULAR_STEP);
-    } else { // (theta1_diff < 0)
-        position_control_set_motor_angle(MOTOR1, current_angles.theta1 + MAX_ANGULAR_STEP);
-    }
-
-    if (theta2_diff == 0) {
-        // We are at the target angle, skip ahead
-    } else if (fabsf(theta2_diff) < MAX_ANGULAR_STEP) {
-        // Move to the final position
-        position_control_set_motor_angle(MOTOR2, target_angles.theta2);
-    } else if (theta2_diff > 0) {
-        position_control_set_motor_angle(MOTOR2, current_angles.theta2 - MAX_ANGULAR_STEP);
-    } else { // (theta2_diff < 0)
-        position_control_set_motor_angle(MOTOR2, current_angles.theta2 + MAX_ANGULAR_STEP);
-    }
-
-    if (theta3_diff == 0) {
-        // We are at the target angle, skip ahead
-    } else if (fabsf(theta3_diff) < MAX_ANGULAR_STEP) {
-        // Move to the final position
-        position_control_set_motor_angle(MOTOR3, target_angles.theta3);
-    } else if (theta3_diff > 0) {
-        position_control_set_motor_angle(MOTOR3, current_angles.theta3 - MAX_ANGULAR_STEP);
-    } else { // (theta3_diff < 0)
-        position_control_set_motor_angle(MOTOR3, current_angles.theta3 + MAX_ANGULAR_STEP);
-    }
-
-    if (theta4_diff == 0) {
-        // We are at the target angle, skip ahead
-    } else if (fabsf(theta4_diff) < MAX_ANGULAR_STEP) {
-        // Move to the final position
-        position_control_set_motor_angle(MOTOR4, target_angles.theta4);
-    } else if (theta4_diff > 0) {
-        position_control_set_motor_angle(MOTOR4, current_angles.theta4 - MAX_ANGULAR_STEP);
-    } else { // (theta4_diff < 0)
-        position_control_set_motor_angle(MOTOR4, current_angles.theta4 + MAX_ANGULAR_STEP);
+    for(size_t i = 0; i < sizeof(current_angles)/sizeof(current_angles[0]); i++){
+        // Get the difference in target and current joint angles
+        float angle_diff = target_angles[i] - current_angles[i];
+        if(angle_diff == 0){
+            // We are at the target angle for this joint
+            continue;
+        } else if (fabsf(angle_diff) < MAX_ANGULAR_STEP) {
+            // We are within one step; set the angle to the final position
+            position_control_set_motor_angle(i, target_angles[i]);
+        } else if (angle_diff > 0) {
+            position_control_set_motor_angle(i, current_angles[i] + MAX_ANGULAR_STEP);
+        } else { // (angle_diff < 0)
+            position_control_set_motor_angle(i, current_angles[i] - MAX_ANGULAR_STEP);
+        }
     }
 
     // Calculate the current position from the current angles
