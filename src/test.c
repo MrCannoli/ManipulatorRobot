@@ -10,11 +10,11 @@
 // Test points for IK and movement
 const struct Point tp1 = {10, 10, 10};
 const struct Point tp2 = {100, 20, 30}; // Unreachable
-const struct Point tp3 = {90, 0, 0}; // 1 solution possible
-const struct Point tp4 = {40, 20, 80}; // Unreachable
+const struct Point tp3 = {90, 0, 0};    // 1 solution possible
+const struct Point tp4 = {40, 20, 80};  // Unreachable
 const struct Point tp5 = {-1, 37, 12};
 const struct Point tp6 = {1000, 70, 70}; // No solutions
-const struct Point tp7 = {-10, 40, 40}; // Close to 120 deg limit, reachable
+const struct Point tp7 = {-10, 40, 40};  // Close to 120 deg limit, reachable
 const struct Point tp8 = {-40, -10, 40}; // Beyond the range of the joints; difficult for IK to determine
 
 const struct Point test_points[] = {tp1, tp2, tp3, tp4, tp5, tp6, tp7, tp8};
@@ -123,13 +123,12 @@ void test_move_to_points() {
     }
 }
 
-void test_ik(){
+void test_ik() {
     float test_angles[NUM_JOINTS];
     for (size_t i = 0; i < (sizeof(test_points) / sizeof(test_points[0])); i++) {
-        if(position_control_fabrik(test_points[i],test_angles)){
+        if (position_control_fabrik(test_points[i], test_angles)) {
             test_success[i]++;
-        }
-        else{
+        } else {
             test_fail[i]++;
         }
     }

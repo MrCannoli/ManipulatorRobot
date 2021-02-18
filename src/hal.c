@@ -26,17 +26,19 @@
 
 // Need to multiply APB1 frequency *2 due to APB1 clock doubling, -1 due to the
 // register adding 1.
+/// \def Prescaler for PWM generating timers
 #define TIMER_PRESCALER (uint32_t)(13 * 2 - 1)
-// Set the period length to be at 50Hz
+/// \def Period length for the PWM timers
 #define TIMER_PERIOD_LENGTH (uint32_t)(64615)
 
-struct counters counters;
-
-// Counter which increments once every millisecond
+/// \var System counter, increments every 1ms in sys_tick_handler()
 static uint32_t systick_counter;
+
+struct counters counters = {};
 
 float motor_duty_cycle[8] = {0, 0, 0, 0, 0, 0, 0, 0};
 
+/// \brief Initialize all peripherals and interrupts
 void hal_init(void) {
     // Enable clocks
     // rcc_periph_clock_enable(RCC_ADC1);
@@ -89,7 +91,6 @@ void hal_init(void) {
     gpio_mode_setup(GPIOB, GPIO_MODE_AF, GPIO_PUPD_NONE, GPIO6 | GPIO7 | GPIO8 | GPIO9);
     gpio_set_output_options(GPIOB, GPIO_OTYPE_PP, GPIO_OSPEED_100MHZ, GPIO6 | GPIO7 | GPIO8 | GPIO9);
     gpio_set_af(GPIOB, GPIO_AF2, GPIO6 | GPIO7 | GPIO8 | GPIO9);
-
 
     timer_set_mode(TIM3, TIM_CR1_CKD_CK_INT, TIM_CR1_CMS_EDGE, TIM_CR1_DIR_UP);
     timer_set_prescaler(TIM3, TIMER_PRESCALER);
@@ -220,7 +221,12 @@ void hal_init(void) {
 
 ///////////////////// Motor Control Functions /////////////////////
 
-// Set the duty cycle (0 - 100%) for the specified motor
+/*!
+ * \brief Set the specified motor's duty cycle
+ *
+ * \param motor Enumerated value of the motor
+ * \param duty_cycle The duty cycle (0-100%) of the PWM for the specified motor
+ */
 void hal_set_motor_duty_cycle(enum motor_num motor, float duty_cycle) {
     // Limit the duty cycle to 0-100%
     if (duty_cycle > 100) {
@@ -231,9 +237,8 @@ void hal_set_motor_duty_cycle(enum motor_num motor, float duty_cycle) {
 
     // Control of the motor is limited to 1-2ms of the 20ms pulse
     const uint32_t timer_offset = (uint32_t)(TIMER_PERIOD_LENGTH / 20);
-    // Divide by 15 here because it gives better control in testing
-    // TODO: Check on this div by 15
-    uint32_t timer_duty_cycle_val = timer_offset + (uint32_t)((float)TIMER_PERIOD_LENGTH * duty_cycle / 100.0 / 15.0);
+    // Divide by 20 to make sure the duty cycle is limited to 5% of the 20ms pulse
+    uint32_t timer_duty_cycle_val = timer_offset + (uint32_t)((float)TIMER_PERIOD_LENGTH * duty_cycle / 100.0f / 20.0f);
 
     switch (motor) {
         case MOTOR1:
@@ -291,13 +296,19 @@ void hal_set_motor_duty_cycle(enum motor_num motor, float duty_cycle) {
     }
 }
 
-// Enable PWM control of the motors
+/// \brief Enable motor control by enabling the PWM level shifter
 void hal_motor_enable(void) { gpio_set(GPIOH, GPIO0); }
 
-// Disable PWM control of the motors
+/// \brief Disable motor control by disabling the PWM level shifter
 void hal_motor_disable(void) { gpio_clear(GPIOH, GPIO0); }
 
 ///////////////////// LED Control Functions /////////////////////
+
+/*!
+ * \brief Control the toggle of the SPI LED
+ *
+ * \param enable Enable or disable the LED
+ */
 void hal_control_spi_led(bool enable) {
     if (enable) {
         gpio_set(GPIOC, GPIO11);
@@ -306,6 +317,11 @@ void hal_control_spi_led(bool enable) {
     }
 }
 
+/*!
+ * \brief Control the toggle of the I2C LED
+ *
+ * \param enable Enable or disable the LED
+ */
 void hal_control_i2c_led(bool enable) {
     if (enable) {
         gpio_set(GPIOC, GPIO12);
@@ -314,6 +330,11 @@ void hal_control_i2c_led(bool enable) {
     }
 }
 
+/*!
+ * \brief Control the toggle of the General1 LED
+ *
+ * \param enable Enable or disable the LED
+ */
 void hal_control_general_led1(bool enable) {
     if (enable) {
         gpio_set(GPIOC, GPIO13);
@@ -322,8 +343,14 @@ void hal_control_general_led1(bool enable) {
     }
 }
 
+/// \brief Toggle general LED1
 void hal_toggle_general_led1() { gpio_toggle(GPIOC, GPIO13); }
 
+/*!
+ * \brief Control the toggle of the General2 LED
+ *
+ * \param enable Enable or disable the LED
+ */
 void hal_control_general_led2(bool enable) {
     if (enable) {
         gpio_set(GPIOC, GPIO14);
@@ -332,7 +359,11 @@ void hal_control_general_led2(bool enable) {
     }
 }
 
-// Note: LED3 is toggled every half second by the systick handler
+/*!
+ * \brief Control the toggle of the General3 LED
+ *
+ * \param enable Enable or disable the LED
+ */
 void hal_control_general_led3(bool enable) {
     if (enable) {
         gpio_set(GPIOC, GPIO15);
@@ -341,40 +372,48 @@ void hal_control_general_led3(bool enable) {
     }
 }
 
-// Return the current systick counter value
+/*!
+ * \brief Get the present systick counter value
+ *
+ * \returns The systick counter value
+ */
 uint32_t hal_get_systick_counter(void) {
     hal_compiler_barrier();
     return systick_counter;
 }
 
-// Delay the specified number of milliseconds. Simple systick implementation,
-// should not be used for high precision delays.
+/*!
+ * \brief Busy-wait delay the specified number of milliseconds
+ *
+ * \param delay Number of milliseconds to wait
+ */
 void hal_delay_ms(uint32_t delay) {
     uint32_t end_time_ms = systick_counter + delay;
     while (hal_get_systick_counter() < end_time_ms)
         ;
 }
 
-// Forces the compiler to not optimize through the barrier
-// Provides a more efficient workaround to using "volatile" prefixes on
-// variables touched by interrupts
+/*!
+ * \brief Forces the compiler to not optimize through the barrier.
+ * Provides a more efficient workaround to using "volatile" prefixes on
+ * variables touched by interrupts
+ */
 void hal_compiler_barrier(void) { __asm__ volatile("" : : : "memory"); }
 
-// Enable the movement interrupt
+/// \brief Enable the movement timer interrupt
 void hal_movement_timer_enable() { nvic_enable_irq(NVIC_TIM1_BRK_TIM9_IRQ); }
 
-// Disable the movement interrupt
+/// \brief Disable the movement timer interrupt
 void hal_movement_timer_disable() { nvic_disable_irq(NVIC_TIM1_BRK_TIM9_IRQ); }
 
-// System core timer. Runs at 1KHz.
-void sys_tick_handler(void){
+/// \brief System core timer. Runs at 1KHz.
+void sys_tick_handler(void) {
     hal_compiler_barrier();
     systick_counter++;
     hal_compiler_barrier();
 }
 
-// Periodic timer used to move the robot joints in steps
-// Ticks at 1KHz when active
+/// \brief Periodic timer used to move the robot joints in steps. Ticks at 1KHz when active
 void tim1_brk_tim9_isr(void) {
     hal_compiler_barrier();
     static size_t step_count = 0;
@@ -386,27 +425,22 @@ void tim1_brk_tim9_isr(void) {
         hal_control_general_led1(0);
     }
 
+    // Toggle LED1 at 2Hz while moving
     if (step_count == STEPS_PER_SECOND / 2) {
-        // Toggle LED1 at 2Hz while moving
         hal_toggle_general_led1();
         // Reset the step count
         step_count = 0;
     }
-    // Attempt to perform a movement step
-    if (position_control_step_towards_position()) {
-        // Stepped successfully
-        step_count++;
-        hal_control_general_led2(0);
-    } else {
-        // Failed to step towards the target
-        hal_control_general_led2(1);
-    }
+
+    // Step the motors towards the target position
+    position_control_step_towards_position();
+    step_count++;
 }
 
-// Software logic fault
+/// \brief Logic fault handler
 void __attribute__((noreturn)) logic_fault() {
     hal_compiler_barrier();
-    // Disable motors so we don't have any funky behavior
+    // Disable motors so we don't have unpredictable behavior
     hal_movement_timer_disable();
     hal_motor_disable();
 

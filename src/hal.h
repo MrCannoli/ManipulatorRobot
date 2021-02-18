@@ -21,18 +21,20 @@ enum {
 };
 
 /// \struct Data structure for holding different counters. Used for debugging and statistics.
-struct counters{
+struct counters {
     uint32_t ik_success_count;
     uint32_t ik_timeout_count;
     uint32_t ik_iteration_overrun_count;
     uint32_t ik_too_large_angle_count;
     uint32_t ik_negative_angle_count;
     uint32_t ik_nan_position;
+    uint32_t invalid_set_angle;
 };
 
-/// \var Struct containing the counters incremented during normal operation
+/// \var Struct containing debugging and logging counters
 extern struct counters counters;
 
+/// \var Array holding the PWM duty cycle for each motor
 extern float motor_duty_cycle[8];
 
 // Initialization
@@ -53,7 +55,7 @@ void hal_control_general_led3(bool enable);
 // Delay Functions
 void hal_delay_ms(uint32_t delay);
 
-// Return the current systick counter value
+// Counter Functions
 uint32_t hal_get_systick_counter(void);
 
 // Compiler barrier
