@@ -1,0 +1,5 @@
+Hardware still needed:
+
+- Long wood screws to go through the wood arms and into the motor head
+- More powerful 5v? power supply
+- 2.0mm wire connectors
