@@ -11,7 +11,7 @@ export TARGETS = stm32/f4
 CFLAGS          += -std=c11
 CFLAGS          += -O0 -ggdb3
 CFLAGS          += -Wall -Wextra -Wshadow -Wconversion -Werror
-CFLAGS          += -fdata-sections -ffunction-sections #-flto Note: link time optimizations breaks weak function overrides here
+CFLAGS          += -fdata-sections -ffunction-sections #-flto Note: link time optimizations breaks weak function overrides
 CFLAGS          += -Isrc/
 CPPFLAGS        += -MD -DSTM32F4
 
@@ -48,9 +48,8 @@ main.elf: $(OBJS) $(LDSCRIPT) $(LIBDEPS)
 	$(Q)$(LD) $(OBJS) $(LDLIBS) $(LDFLAGS) -T$(LDSCRIPT) $(ARCH_FLAGS)  -o main.elf
 
 # Black Magic Probe (BMP) load & debug commands
-load: main.elf
+load: lib main.elf
 	gdb-multiarch main.elf -x bmp.gdb -ex load
 
 gdb: lib main.elf
 	gdb-multiarch -x bmp.gdb
-

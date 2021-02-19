@@ -61,5 +61,5 @@ int position_control_check_angles(void);
 
 // Movement control
 int position_control_set_target_position(struct Point target);
-int position_control_step_towards_position(void);
+void position_control_step_towards_position(void);
 void position_control_move_to_start(void);

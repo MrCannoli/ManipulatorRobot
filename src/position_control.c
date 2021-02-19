@@ -432,7 +432,7 @@ int position_control_check_angles() {
  *
  * \returns 1 if stepped successfully, 0 if failed
  */
-int position_control_step_towards_position() {
+void position_control_step_towards_position() {
     for (size_t i = 0; i < sizeof(current_angles) / sizeof(current_angles[0]); i++) {
         // Get the difference in target and current joint angles
         float angle_diff = target_angles[i] - current_angles[i];

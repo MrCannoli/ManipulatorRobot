@@ -219,8 +219,6 @@ void hal_init(void) {
     return;
 }
 
-///////////////////// Motor Control Functions /////////////////////
-
 /*!
  * \brief Set the specified motor's duty cycle
  *
@@ -301,8 +299,6 @@ void hal_motor_enable(void) { gpio_set(GPIOH, GPIO0); }
 
 /// \brief Disable motor control by disabling the PWM level shifter
 void hal_motor_disable(void) { gpio_clear(GPIOH, GPIO0); }
-
-///////////////////// LED Control Functions /////////////////////
 
 /*!
  * \brief Control the toggle of the SPI LED
@@ -437,7 +433,7 @@ void tim1_brk_tim9_isr(void) {
     step_count++;
 }
 
-/// \brief Logic fault handler
+/// \brief Logic fault handler. Called when something very unexpected happens.
 void __attribute__((noreturn)) logic_fault() {
     hal_compiler_barrier();
     // Disable motors so we don't have unpredictable behavior
@@ -445,7 +441,7 @@ void __attribute__((noreturn)) logic_fault() {
     hal_motor_disable();
 
     // Future feature: store and transmit the current joint angles of the robot
-    // arm over USB to the host computer This can be used to return the robot to
+    // arm over USB to the host computer. This can be used to return the robot to
     // the initial position without jumping
     while (1) {
         // Blink LED 3 at 1Hz to note the error
@@ -455,3 +451,9 @@ void __attribute__((noreturn)) logic_fault() {
         hal_control_general_led3(0);
     }
 }
+
+/// \brief Handler that is called whenever an unhandled interrupt is called.
+void blocking_handler() { logic_fault(); }
+
+/// \brief Handler for serious errors
+void hard_fault_handler() { logic_fault(); }
